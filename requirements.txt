@@ -1,0 +1,5 @@
+drf-spectacular
+django
+djangorestframework
+django-filter
+djangorestframework-simplejwt
