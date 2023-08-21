@@ -17,7 +17,7 @@ To run the Django backend locally, follow these steps:
 1. Clone the repository:
 
    ```
-   git clone https://github.com/tamkimd/ecommerce-backend-django-vnpay
+   git clone https://github.com/tamkimd/ecommerce-backend-django-vnpay.git
    ```
 
 2. Install the required packages:
