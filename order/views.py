@@ -1,26 +1,29 @@
-from rest_framework import viewsets, mixins
 from urllib.parse import unquote
+
+from django.db.models import Sum
+from django_filters.rest_framework import DjangoFilterBackend
+from rest_framework import mixins, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
-from rest_framework import status
 from rest_framework.views import APIView
-from .models import ShippingInfo, Order, Cart, LineItem
-from .serializers import (
-    ShippingInfoSerializer,
-    OrderSerializer,
-    OrderCreateSerializer,
-    OrderUpdateSerializer,
-    CartSerializer,
-    LineItemSerializer,
-    LineItemCreateSerializer,
-    LineItemUpdateSerializer,
-    ShipmentSerializer,
-)
-from .models import Shipment
 
-from common.permissions import IsSeller, IsCustomer
-from django_filters.rest_framework import DjangoFilterBackend
-from django.db.models import Sum
+from common.permissions import IsCustomer, IsSeller
+
+from .models import Cart, LineItem, Order, Shipment, ShippingInfo, Promotion
+from .serializers import (
+    CartSerializer,
+    LineItemCreateSerializer,
+    LineItemSerializer,
+    LineItemUpdateSerializer,
+    OrderCreateSerializer,
+    OrderReturnSerializer,
+    OrderSerializer,
+    OrderUpdateSerializer,
+    ShipmentSerializer,
+    ShippingInfoSerializer,
+    PromotionSerializer,
+    ShipmentUpdateSerializer,
+)
 
 
 class ShippingInfoViewSet(viewsets.ModelViewSet):
@@ -38,8 +41,8 @@ class OrderViewSet(
     queryset = Order.objects.all()
     serializer_class = OrderSerializer
     filter_backends = [DjangoFilterBackend]
-    filterset_fields = ['status', 'user',
-                        'payments__status', 'payments__method']
+    filterset_fields = ["status", "user",
+                        "payments__status", "payments__method"]
 
     def get_queryset(self):
         """Get the orders of the currently logged-in user."""
@@ -70,7 +73,7 @@ class OrderViewSet(
     def get_permissions(self):
         if self.action in ["list", "retrieve"]:
             permission_classes = [IsCustomer | IsSeller]
-        elif self.action in ["create", "cancel"]:
+        elif self.action in ["create", "cancel", "request_return_order"]:
             permission_classes = [IsCustomer]
         else:
             permission_classes = [IsSeller]
@@ -82,8 +85,7 @@ class OrderViewSet(
         if pk is not None:
             order = self.get_object()
             serializer = OrderUpdateSerializer(
-                order, data={"status": "cancelled"}
-            )
+                order, data={"status": "cancelled"})
             serializer.is_valid(raise_exception=True)
             serializer.save()
             return Response({"status": "Order cancelled"})
@@ -93,13 +95,79 @@ class OrderViewSet(
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+    @action(detail=False, methods=["post"])
+    def request_return_order(self, request):
+        try:
+            serializer = OrderReturnSerializer(context={"request": request})
+            serializer.create(data=request.data)
+
+            return Response({"status": "Order return request created"})
+        except Exception as e:
+            print(e)
+            return Response(
+                {"error": "Something went wrong"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+    @action(detail=True, methods=["post"])
+    def accept_return_order(self, request, pk=None):
+        try:
+            order = Order.objects.get(pk=pk)
+            line_items = LineItem.objects.filter(order=order)
+            delivered_items = [
+                {"line_item": line_item.id, "quantity": line_item.quantity}
+                for line_item in line_items
+            ]
+            data = request.data.copy()
+            data["delivered_items"] = delivered_items
+            data["order"] = order.id
+            serializer = ShipmentSerializer(
+                data=data, context={"request": request})
+            if not serializer.is_valid():
+                raise Exception("Bad data")
+            serializer.save()
+
+            order.status = "shipping"
+            order.save()
+
+            return Response({"status": "Order return request accepted"})
+        except Exception as e:
+            print(e)
+            return Response(
+                {"error": "Something went wrong"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+    @action(detail=True, methods=["post"])
+    def finish_return_order(self, request, pk=None):
+        try:
+            order = Order.objects.get(pk=pk)
+            line_items = LineItem.objects.filter(order=order).select_related(
+                "stock_product"
+            )
+            for item in line_items:
+                stock_product = item.stock_product
+                print(stock_product.quantity)
+                stock_product.quantity += item.quantity
+                stock_product.save()
+
+            order.status = "success"
+            order.save()
+
+            return Response({"status": "Order return request completed"})
+        except Exception as e:
+            print(e)
+            return Response(
+                {"error": "Something went wrong"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
     @action(detail=True, methods=["patch"])
     def ship(self, request, pk=None):
         if pk is not None:
             order = self.get_object()
             serializer = OrderUpdateSerializer(
-                order, data={"status": "shipping"}
-            )
+                order, data={"status": "shipping"})
             serializer.is_valid(raise_exception=True)
             serializer.save()
             return Response({"status": "Order in transit"})
@@ -122,9 +190,7 @@ class OrderViewSet(
                 return Response(
                     f"Invalid status: {status}. Valid statuses are: success, failed"
                 )
-            serializer = OrderUpdateSerializer(
-                order, data={"status": status}
-            )
+            serializer = OrderUpdateSerializer(order, data={"status": status})
             serializer.is_valid(raise_exception=True)
             serializer.save()
             return Response({"status": message})
@@ -187,3 +253,61 @@ class LineItemViewSet(viewsets.ModelViewSet):
 class ShipmentViewSet(viewsets.ModelViewSet):
     queryset = Shipment.objects.all()
     serializer_class = ShipmentSerializer
+
+    def get_serializer_class(self):
+        if self.action == "create":
+            return ShipmentSerializer
+        elif self.action in ["cancel", "ship", "update_order_result", "failed", "success"]:
+            return ShipmentUpdateSerializer
+        elif self.action in ["list", "retrieve"]:
+            return ShipmentSerializer
+
+    @action(detail=True, methods=["patch"])
+    def ship(self, request, pk=None):
+        if pk is not None:
+            order = self.get_object()
+            serializer = ShipmentUpdateSerializer(
+                order, data={"status": "shipping"})
+            serializer.is_valid(raise_exception=True)
+            serializer.save()
+            return Response({"status": "Order shipping"})
+        else:
+            return Response(
+                {"error": "Must provide a valid pk value."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+    @action(detail=True, methods=["patch"])
+    def success(self, request, pk=None):
+        if pk is not None:
+            order = self.get_object()
+            serializer = ShipmentUpdateSerializer(
+                order, data={"status": "success"})
+            serializer.is_valid(raise_exception=True)
+            serializer.save()
+            return Response({"status": "Order success"})
+        else:
+            return Response(
+                {"error": "Must provide a valid pk value."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+    @action(detail=True, methods=["patch"])
+    def failed(self, request, pk=None):
+        if pk is not None:
+            order = self.get_object()
+            serializer = ShipmentUpdateSerializer(
+                order, data={"status": "failed"})
+            serializer.is_valid(raise_exception=True)
+            serializer.save()
+            return Response({"status": "Order failed"})
+        else:
+            return Response(
+                {"error": "Must provide a valid pk value."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+
+class PromotionViewSet(viewsets.ModelViewSet):
+    queryset = Promotion.objects.all()
+    serializer_class = PromotionSerializer

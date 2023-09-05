@@ -9,13 +9,7 @@ https://docs.djangoproject.com/en/4.2/topics/settings/
 For the full list of settings and their values, see
 https://docs.djangoproject.com/en/4.2/ref/settings/
 """
-from common.config import (
-    VNPAY_RETURN_URL,
-    VNPAY_PAYMENT_URL,
-    VNPAY_API_URL,
-    VNPAY_TMN_CODE,
-    VNPAY_HASH_SECRET_KEY,
-)
+
 from pathlib import Path
 from datetime import timedelta
 import os
@@ -54,14 +48,16 @@ INSTALLED_APPS = [
     "common",
     "utils",
     "django_filters",
+    "service",
+    "statistic",
 ]
 
-
-VNPAY_RETURN_URL = VNPAY_RETURN_URL
-VNPAY_PAYMENT_URL = VNPAY_PAYMENT_URL
-VNPAY_API_URL = VNPAY_API_URL
-VNPAY_TMN_CODE = VNPAY_TMN_CODE
-VNPAY_HASH_SECRET_KEY = VNPAY_HASH_SECRET_KEY
+VNPAY_RETURN_URL = 'http://127.0.0.1:8000/api/payment_response/'  # get from config
+VNPAY_PAYMENT_URL = 'https://sandbox.vnpayment.vn/paymentv2/vpcpay.html'  # get from config
+VNPAY_API_URL = 'https://sandbox.vnpayment.vn/merchant_webapi/api/transaction'
+VNPAY_TMN_CODE = 'FSTP4B3B'  # Website ID in VNPAY System, get from config
+# Secret key for create checksum,get from config
+VNPAY_HASH_SECRET_KEY = 'QRLIYJGGGPJYMIBOYXZZNJEJLXGHRPTF'
 
 REST_FRAMEWORK = {
     'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
@@ -77,6 +73,7 @@ SPECTACULAR_SETTINGS = {
     'DESCRIPTION': 'Some description about gas_web',
     'VERSION': '1.0.0',
     'SERVE_INCLUDE_SCHEMA': False,
+    # OTHER SETTINGS
 }
 
 SIMPLE_JWT = {
@@ -160,7 +157,10 @@ USE_I18N = True
 USE_TZ = True
 
 
+# Static files (CSS, JavaScript, Images)
+# https://docs.djangoproject.com/en/4.2/howto/static-files/
 
+STATIC_URL = "static/"
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/4.2/ref/settings/#default-auto-field

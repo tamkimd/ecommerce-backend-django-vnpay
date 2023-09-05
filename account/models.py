@@ -45,6 +45,7 @@ class User(AbstractBaseUser):
         db_table = 'user'
         
     def save(self, *args, **kwargs):
+        # set is_staff = true if role is sale or shipper
         if self.role_id == 1 or self.role_id ==2:
             self.is_staff = True
         super().save(*args, **kwargs)

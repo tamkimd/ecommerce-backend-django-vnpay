@@ -1,5 +1,6 @@
 import hashlib
 import hmac
+import urllib.parse
 
 
 def hmacsha512(key, data):

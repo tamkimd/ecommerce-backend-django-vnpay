@@ -3,6 +3,8 @@ from django.urls import path, include
 from .views import register, RoleViewSet, user_login, refresh_token,forgot_password,reset_password
 
 router = routers.DefaultRouter()
+
+# router.register(r'account', UserViewSet)
 router.register(r'role', RoleViewSet)
 
 urlpatterns = [

@@ -8,6 +8,7 @@ router.register(r'stock', StockViewSet)
 router.register(r'stockproduct', StockProductViewSet)
 
 
+
 urlpatterns = [
     path('', include(router.urls)),
 ]

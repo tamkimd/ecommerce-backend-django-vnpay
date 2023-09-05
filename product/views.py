@@ -1,9 +1,8 @@
-from rest_framework import viewsets, permissions
+from rest_framework import viewsets,permissions
 from .models import Product, Stock, StockProduct
 from .serializers import ProductSerializer, ProductListSerializer, StockSerializer, StockProductSerializer
 from common.permissions import IsCustomer, IsSeller
 from rest_framework.filters import SearchFilter, OrderingFilter
-
 
 class ProductViewSet(viewsets.ModelViewSet):
     queryset = Product.objects.all()

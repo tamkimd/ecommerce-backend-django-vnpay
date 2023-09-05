@@ -1,15 +1,30 @@
-from rest_framework import serializers
-
-
-from .models import ShippingInfo, Order, Cart, LineItem, Shipment, DeliveredItem
-from product.models import StockProduct
-from payment.serializers import PaymentSerializer
-from django.conf import settings
 from datetime import datetime
-from rest_framework import serializers
-from .models import LineItem, Cart, StockProduct
+
+from django.conf import settings
 from django.db import transaction
 from django.db.models import Sum
+from rest_framework import serializers
+from service.promotion import calculate_free_items
+from payment.serializers import PaymentSerializer
+from product.models import StockProduct
+
+from .models import (
+    Cart,
+    DeliveredItem,
+    LineItem,
+    Order,
+    Shipment,
+    ShippingInfo,
+    StockProduct,
+    Promotion,
+)
+
+
+class PromotionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Promotion
+        fields = ["id", "code", "discount_percentage", "required_quantity",
+                  "free_items_quantity", "start_date", "end_date", "description"]
 
 
 class ShippingInfoSerializer(serializers.ModelSerializer):
@@ -21,7 +36,7 @@ class ShippingInfoSerializer(serializers.ModelSerializer):
 class LineItemSerializer(serializers.ModelSerializer):
     class Meta:
         model = LineItem
-        fields = ["id", "cart", "order", "stock_product", "quantity", "price"]
+        fields = ["id", "cart", "order", "stock_product", "quantity","free_quantity", "price"]
 
 
 class LineItemCreateSerializer(serializers.ModelSerializer):
@@ -50,7 +65,8 @@ class LineItemCreateSerializer(serializers.ModelSerializer):
 
         # Check if the stock_product already exists in the cart
         line_item = LineItem.objects.filter(
-            cart=cart, stock_product=stock_product).first()
+            cart=cart, stock_product=stock_product
+        ).first()
 
         if line_item:
             # If the stock_product already exists in the cart, update the quantity
@@ -94,8 +110,18 @@ class OrderSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Order
-        fields = ["id", "shipping_date", "ordered_date",
-                  "status", "line_items", "user", "payments"]
+        fields = [
+            "id",
+            "shipping_date",
+            "ordered_date",
+            "status",
+            "line_items",
+            "user",
+            "payments",
+            "return_of_order",
+            "promotion",
+            "shipping_fee"
+        ]
 
 
 class OrderCreateSerializer(serializers.ModelSerializer):
@@ -106,8 +132,16 @@ class OrderCreateSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Order
-        fields = ["id", "shipping_date", "ordered_date",
-                  "status", "line_items", "shipping_info"]
+        fields = [
+            "id",
+            "shipping_date",
+            "ordered_date",
+            "status",
+            "line_items",
+            "shipping_info",
+            "promotion",
+            "shipping_fee"
+        ]
 
     def validate_line_items(self, value):
         user = self.context["request"].user
@@ -116,7 +150,8 @@ class OrderCreateSerializer(serializers.ModelSerializer):
         for line_item in value:
             if line_item not in user_line_items:
                 raise serializers.ValidationError(
-                    "Line items must be from the user's cart.")
+                    "Line items must be from the user's cart."
+                )
         return value
 
     @transaction.atomic
@@ -129,13 +164,59 @@ class OrderCreateSerializer(serializers.ModelSerializer):
 
         if shipping_info_data:
             ShippingInfo.objects.create(order=order, **shipping_info_data)
+        print(order)
 
         if line_items_data:
             for line_item in line_items_data:
                 line_item.order = order
                 line_item.save()
 
+
         return order
+
+
+class OrderReturnSerializer(serializers.ModelSerializer):
+    line_items = serializers.PrimaryKeyRelatedField(
+        queryset=LineItem.objects.all(), many=True
+    )
+
+    class Meta:
+        model = Order
+        fields = [
+            "id",
+            "ordered_date",
+            "status",
+            "line_items",
+            "return_of_order",
+        ]
+
+    @transaction.atomic
+    def create(self, data):
+        print(data)
+        user = self.context["request"].user
+        return_items_quantity_dict = {
+            item["line_item_id"]: item["quantity"] for item in data
+        }
+        return_ids = [item["line_item_id"] for item in data]
+
+        sell_line_items = LineItem.objects.filter(
+            id__in=return_ids, order__user=user)
+
+        order = Order.objects.create(
+            user=user, return_of_order=sell_line_items[0].order, status="order"
+        )
+
+        returning_line_items = []
+        for item in sell_line_items:
+            return_item = LineItem.objects.create(
+                order=order,
+                quantity=return_items_quantity_dict[item.id],
+                price=item.price,
+                stock_product=item.stock_product,
+            )
+            returning_line_items.append(return_item)
+
+        return returning_line_items
 
 
 class OrderUpdateSerializer(serializers.ModelSerializer):
@@ -145,7 +226,6 @@ class OrderUpdateSerializer(serializers.ModelSerializer):
 
     @transaction.atomic
     def update(self, instance, validated_data):
-
         # Update the 'status' field
         instance.status = validated_data.get("status", instance.status)
 
@@ -188,14 +268,12 @@ class DeliveredItemSerializer(serializers.ModelSerializer):
         fields = ["id", "line_item", "quantity"]
 
 
-
-
 class ShipmentSerializer(serializers.ModelSerializer):
     delivered_items = DeliveredItemSerializer(many=True)
 
     class Meta:
         model = Shipment
-        fields = ["id", "order", "shipper", "delivered_items"]
+        fields = ["id", "order", "shipper", "status", "delivered_items"]
 
     @transaction.atomic
     def create(self, validated_data):
@@ -207,10 +285,9 @@ class ShipmentSerializer(serializers.ModelSerializer):
             quantity = item_data["quantity"]
 
             DeliveredItem.objects.create(
-                shipment=shipment, line_item=line_item, quantity=quantity)
-            stock_product = line_item.stock_product
-            stock_product.quantity -= quantity
-            stock_product.save()
+                shipment=shipment, line_item=line_item, quantity=quantity
+            )
+
         return shipment
 
     def validate_delivered_items(self, delivered_items):
@@ -220,19 +297,93 @@ class ShipmentSerializer(serializers.ModelSerializer):
         line_items_ids = [item.id for item in line_items]
 
         delivered_quantities = {}
-        for item in DeliveredItem.objects.filter(shipment__order=order):
+        for item in DeliveredItem.objects.filter(shipment__order=order, shipment__status__in=["pending", "shipping"]):
             if item.line_item.id in delivered_quantities:
                 delivered_quantities[item.line_item.id] += item.quantity
             else:
                 delivered_quantities[item.line_item.id] = item.quantity
 
         for item in delivered_items:
-            if item['line_item'].id in line_items_ids:
-                line_item = item['line_item']
+            if item["line_item"].id in line_items_ids:
+                line_item = item["line_item"]
                 quantity_delivered = delivered_quantities.get(line_item.id, 0)
 
-                if item['quantity'] + quantity_delivered > line_item.quantity:
+                if item["quantity"] + quantity_delivered > line_item.quantity:
                     raise serializers.ValidationError(
-                        f"Quantity for line item {line_item.id} exceeds available quantity.")
+                        f"Quantity for line item {line_item.id} exceeds available quantity."
+                    )
 
         return delivered_items
+
+
+class ShipmentUpdateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Order
+        fields = ["status"]
+
+    @transaction.atomic
+    def update(self, instance, validated_data):
+        # Update the 'status' field
+
+        status = validated_data.get("status", instance.status)
+
+        print(instance.status)
+        if status == "shipping":
+            order = instance.order
+            # if 3 shipment.status  of an order =="failed" => order.status == failed
+            failed_count = Shipment.objects.filter(
+                order=order, status="failed").count()
+            print(failed_count)
+            if failed_count >= 3:
+                order.status = "cancelled"
+                order.save()
+                raise serializers.ValidationError(
+                    "Shipment of this order has failed 3 time => status of order = failed"
+                )
+            if instance.status == "pending":
+                instance.shipping_date = datetime.now()
+                delivered_items = instance.delivered_items.all()
+                print(delivered_items)
+                for item in delivered_items:
+                    line_item = (item.line_item)
+                    quantity = (item.quantity)
+                    stock_product = line_item.stock_product
+                    stock_product.quantity -= quantity
+                    stock_product.save()
+
+                instance.status = status
+
+            else:
+                raise serializers.ValidationError(
+                    'status of Shipment must be pending to ship.'
+                )
+
+        elif status == "success":
+            if instance.status == "shipping":
+                instance.shipped_date = datetime.now()
+                instance.status = status
+
+            else:
+                raise serializers.ValidationError(
+                    'status of Shipment must be shipping to success.'
+                )
+
+        elif status == "failed" or status == "cancelled":
+            if instance.status == "shipping":
+                instance.failed_date = datetime.now()
+                delivered_items = instance.delivered_items.all()
+                print(delivered_items)
+                for item in delivered_items:
+                    line_item = (item.line_item)
+                    quantity = (item.quantity)
+                    stock_product = line_item.stock_product
+                    stock_product.quantity += quantity
+                    stock_product.save()
+                instance.status = status
+
+            else:
+                raise serializers.ValidationError(
+                    'status of Shipment must be shipping to failed.'
+                )
+        instance.save()
+        return instance
